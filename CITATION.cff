@@ -4,7 +4,7 @@ title: "PG Learn"
 type: software
 authors:
   - family-names: Bindschaedler
-    given-names: Quentin
+    given-names: Quentin P.
     affiliation: ChemTrain
 abstract: "A Quizlet-style trainer for protecting groups and their deprotection conditions in organic synthesis, in one HTML file."
 url: "https://chemtrain.github.io/pg-learn/pg_learn.html"
