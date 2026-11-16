@@ -579,47 +579,64 @@ function mergeDocs(doc, changes) {
    - The All pool of an app: a card waits before it comes back, longer the better it is known
      (WAIT_ALL questions, by its level), and cards not yet mastered come up more often than mastered ones.
    Levels: three right answers master a card (Not studied → Learning → Familiar → Mastered);
-   a wrong answer moves it back one step, never below Learning. */
+   a wrong answer moves it back one step, never below Learning.
+   The other quiz tabs (Most acidic, Which is which, Removed?, Plan, the Reactivity quizzes, Count, Name) work the
+   same way through deal/step/mark: no rounds of eight, a question counts as done after three right answers. */
 window.CTLearn = (function () {
   var WAIT_SET = 3;                    // a set: not one of the last 3 cards asked (fewer in a tiny set)
-  var WAIT_ALL = [0, 10, 30, 80];      // All: questions before a card can come back, by its level
+  var WAIT_ALL = [10, 10, 30, 80];     // All: questions before a card can come back, by its level
   var MASTERED_WEIGHT = 0.25;          // All, Ask "All cards": a mastered card is drawn a quarter as often
 
   function isAll(set) { return !!set && (set.id === 'all' || /^all-/.test(String(set.id))); }
   function after(before, ok) { return ok ? Math.min(3, before + 1) : Math.max(1, before - 1); }
 
-  // o: { cards, order, lvl, ask ('all' | anything else: not mastered only), shuffle, all, round, not }
-  // round.seen maps a card id to the question number it was last asked at. Returns the card, or null when done.
+  // o: { cards, order, lvl, ask ('all' | anything else: not mastered only), shuffle, all, round, not, key }
+  // round.seen maps a card's key (its id) to the question number it was last asked at. Returns the card, or null when done.
   function next(o) {
-    var lvl = o.lvl, round = o.round, seen = round.seen || (round.seen = new Map());
-    var pool = o.cards.filter(function (c) { return o.ask === 'all' || lvl(c.id) < 3; });
+    var key = o.key || function (c) { return c.id; };
+    var lvl = function (c) { return o.lvl(key(c)); }, round = o.round, seen = round.seen || (round.seen = new Map());
+    var pool = o.cards.filter(function (c) { return o.ask === 'all' || lvl(c) < 3; });
     if (!pool.length) return null;
     if (o.not && pool.length > 1) pool = pool.filter(function (c) { return c !== o.not; });
     var n = round.queue.length, pick;
     if (!o.shuffle) {  // Set order: the next card after the last one asked
       var order = o.order.filter(function (c) { return pool.indexOf(c) >= 0; });
       var last = -1;
-      order.forEach(function (c, i) { if (seen.has(c.id) && (last < 0 || seen.get(c.id) > seen.get(order[last].id))) last = i; });
+      order.forEach(function (c, i) { if (seen.has(key(c)) && (last < 0 || seen.get(key(c)) > seen.get(key(order[last])))) last = i; });
       pick = order[(last + 1) % order.length];
     } else {
-      var wait = function (c) { return Math.min(pool.length - 1, o.all ? WAIT_ALL[lvl(c.id)] : WAIT_SET); };
-      var since = function (c) { return seen.has(c.id) ? n - seen.get(c.id) : Infinity; };
+      var wait = function (c) { return Math.min(pool.length - 1, o.all ? WAIT_ALL[lvl(c)] : WAIT_SET); };
+      var since = function (c) { return seen.has(key(c)) ? n - seen.get(key(c)) : Infinity; };
       var free = pool.filter(function (c) { return since(c) > wait(c); });
       if (!free.length) {  // every card asked too recently: the one closest to its turn
         var best = Infinity;
         pool.forEach(function (c) { var d = wait(c) - since(c); if (d < best) best = d; });
         free = pool.filter(function (c) { return wait(c) - since(c) === best; });
       }
-      var w = function (c) { return o.all && lvl(c.id) === 3 ? MASTERED_WEIGHT : 1; };
+      var w = function (c) { return o.all && lvl(c) === 3 ? MASTERED_WEIGHT : 1; };
       var total = free.reduce(function (s, c) { return s + w(c); }, 0), r = Math.random() * total;
       pick = free[free.length - 1];
       for (var i = 0; i < free.length; i++) { r -= w(free[i]); if (r < 0) { pick = free[i]; break; } }
     }
-    seen.set(pick.id, n);
+    seen.set(key(pick), n);
     return pick;
   }
 
-  return { next: next, isAll: isAll, after: after, WAIT_SET: WAIT_SET, WAIT_ALL: WAIT_ALL };
+  // A quiz tab as a stream: st.deck holds the questions asked so far, st.i the one on screen.
+  // q: { pool, key, rec (key -> right answers so far; 3 = done), ask, all, not }. Each returns the question, or null.
+  function pickInto(st, q, not) {
+    var c = next({ cards: q.pool, key: q.key, lvl: function (k) { return Math.min(3, +q.rec[k] || 0); }, ask: q.ask,
+      shuffle: true, all: q.all, round: { queue: st.deck, seen: st.seenAt }, not: not });
+    if (c) st.deck[st.i] = c;
+    return c;
+  }
+  function deal(st, q, not) { st.deck = []; st.i = 0; st.results = []; st.retry = false; st.seenAt = new Map(); return pickInto(st, q, not); }
+  function step(st, q) { if (!st.seenAt) return deal(st, q); st.i++; return pickInto(st, q); }
+  function swap(st, q) { return st.seenAt ? pickInto(st, q, st.deck[st.i]) : deal(st, q); }  // another question in place of the one on screen
+  function mark(rec, k, ok) { rec[k] = after(+rec[k] || 0, ok); }
+  var done = function (rec, k) { return (+rec[k] || 0) >= 3; };
+
+  return { next: next, isAll: isAll, after: after, deal: deal, step: step, swap: swap, mark: mark, done: done, WAIT_SET: WAIT_SET, WAIT_ALL: WAIT_ALL };
 })();
 </script>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="ct-logo" viewBox="32.22 39.33 54.89 76.62"><g transform="translate(2.341,2.04)"><g transform="matrix(0.248,0,0,0.248,33.889,62.61)"><path fill="#939598" d="M -14.552,187.031 H 197.115 v 11.759 H -14.552 Z" stroke-width="5.88" /><path fill="#231f20" d="M 20.726,145.874 H 191.235 v 29.398 H 20.726 Z" stroke-width="5.88" /><circle fill="#58595b" cx="26.599" cy="175.272" r="17.639" stroke-width="5.88" /><circle fill="#58595b" cx="61.877" cy="175.272" r="17.639" stroke-width="5.88" /><circle fill="#a0041e" cx="26.599" cy="175.272" r="8.819" stroke-width="5.88" /><circle fill="#a0041e" cx="61.877" cy="175.272" r="8.819" stroke-width="5.88" /><path fill="#dd2e44" d="M 14.846,181.151 H -8.672 c -5.88,0 -8.819,-2.94 0,-11.759 L 14.846,145.874 c 5.88,-5.88 11.759,-11.765 11.759,0 v 23.519 c 0,11.759 -0.006,11.759 -11.759,11.759 z" stroke-width="5.88" /><path fill="#231f20" d="m 32.485,104.716 c 0,19.479 -7.896,35.278 -17.639,35.278 -9.743,0 -17.639,-15.799 -17.639,-35.278 0,-19.485 7.896,-35.278 17.639,-35.278 9.743,0 17.639,15.793 17.639,35.278 z" stroke-width="5.88" /><path fill="#6d6e71" d="M 50.124,75.318 H 26.605 L 14.846,28.281 h 47.037 z" stroke-width="5.88" /><path fill="#414042" d="m 138.318,134.114 a 11.759,11.759 0 0 1 -11.759,11.759 H 20.726 A 11.759,11.759 0 0 1 8.966,134.114 V 75.318 A 11.759,11.759 0 0 1 20.726,63.559 H 126.559 a 11.759,11.759 0 0 1 11.759,11.759 z" stroke-width="5.88" /><path fill="#c1694f" d="m 61.883,139.994 a 5.88,5.88 0 1 1 -11.759,0 V 63.559 a 5.88,5.88 0 0 1 11.759,0 z m 35.278,0 a 5.88,5.88 0 1 1 -11.759,0 V 63.559 a 5.88,5.88 0 1 1 11.759,0 z" stroke-width="5.88" /><path fill="#808285" d="m 197.115,139.994 a 5.88,5.88 0 0 1 -5.88,5.88 H 26.605 a 5.88,5.88 0 1 1 0,-11.759 H 191.235 a 5.88,5.88 0 0 1 5.88,5.88 z" stroke-width="5.88" /><circle fill="#58595b" cx="161.831" cy="169.392" r="23.519" stroke-width="5.88" /><circle fill="#58595b" cx="114.794" cy="169.392" r="23.519" stroke-width="5.88" /><circle fill="#a0041e" cx="161.831" cy="169.392" r="11.759" stroke-width="5.88" /><circle fill="#a0041e" cx="114.794" cy="169.392" r="11.759" stroke-width="5.88" /><path fill="#414042" d="M 56.003,4.762 H 20.726 a 5.88,5.88 0 0 0 -5.88,5.88 V 28.281 H 61.883 V 10.642 a 5.88,5.88 0 0 0 -5.88,-5.88 z" stroke-width="5.88" /><path fill="#be1931" d="m 120.679,28.281 h 70.556 V 134.114 H 120.679 Z" stroke-width="5.88" /><path fill="#a0041e" d="m 197.115,22.401 a 5.88,5.88 0 0 1 -5.88,5.88 H 120.679 a 5.88,5.88 0 1 1 0,-11.759 h 70.556 a 5.88,5.88 0 0 1 5.88,5.88 z" stroke-width="5.88" /><path fill="#ea596e" d="m 132.439,92.957 h 47.037 v 29.398 h -47.037 z" stroke-width="5.88" /><path fill="#f4900c" d="m 161.837,175.272 h -47.037 c -0.747,0 -1.488,-0.141 -2.181,-0.417 L 84.267,163.512 H 44.244 a 5.88,5.88 0 1 1 0,-11.759 H 85.402 c 0.753,0 1.488,0.141 2.187,0.417 l 28.34,11.342 h 45.908 a 5.88,5.88 0 1 1 0,11.759 z" stroke-width="5.88" /><path fill="#55acee" d="m 179.476,45.92 a 5.88,5.88 0 0 0 -5.88,-5.88 h -35.278 a 5.88,5.88 0 0 0 -5.88,5.88 v 29.398 a 5.88,5.88 0 0 0 5.88,5.88 h 35.278 a 5.88,5.88 0 0 0 5.88,-5.88 z" stroke-width="5.88" /></g><g transform="matrix(0,1.017,-1.017,0,55.325,25.297)" fill="#000000" stroke="#ee2b2b"><path d="M 29.775,13.877 V 9.642" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="#000000" stroke="#ee2b2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.889,-0.889,0,63.364,25.187)" stroke="#eeee2b"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#eeee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.953,-0.953,0,56.409,17.715)" stroke="#ee8c2b"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#ee8c2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.826,-0.826,0,63.919,18.133)" stroke="#8cee2b"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#8cee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.762,-0.762,0,70.05,25.142)" stroke="#2bee2b"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#2bee2b" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.699,-0.699,0,70.403,19.676)" stroke="#2bee8c"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#2bee8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.635,-0.635,0,75.406,26.648)" stroke="#2beeee"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#2beeee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.572,-0.572,0,76.379,22.292)" stroke="#2b8cee"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#2b8cee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.508,-0.508,0,80.543,28.097)" stroke="#2b2bee"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#2b2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.445,-0.445,0,81.624,25.126)" stroke="#8c2bee"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#8c2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.381,-0.381,0,84.347,30.3)" stroke="#ee2bee"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#ee2bee" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g><g transform="matrix(0,0.318,-0.318,0,85,28.218)" stroke="#ee2b8c"><path d="M 29.775,13.877 V 9.642" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 31.095,13.105 V 10.414" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 33.444,15.986 29.775,13.877" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 37.114,13.877 -3.669,2.109" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 35.793,13.105 -2.349,1.355" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 37.114,9.642 V 13.877" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,7.533 3.669,2.109" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="m 33.444,9.059 2.349,1.355" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /><path d="M 29.775,9.642 33.444,7.533" fill="none" stroke="#ee2b8c" stroke-width="0.532" stroke-linecap="round" stroke-linejoin="miter" /></g></g></symbol></svg>
@@ -739,7 +756,7 @@ const G = Object.fromEntries(DATA.groups.map(g => [g.id, g]));
 const CND = Object.fromEntries(DATA.conds.map(c => [c.id, c]));
 const CHART = DATA.chart, NOTES = DATA.notes;
 const REMOVED = new Set(['X', 'x']), STAYS = new Set(['.', 's']), HARD = new Set(['x', 's']);
-const DECK_SIZE = 8, LETTERS = 'abcd';
+const LETTERS = 'abcd';
 const LEVEL_NAMES = ['Not studied', 'Learning', 'Familiar', 'Mastered'];
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -1073,8 +1090,8 @@ function renderSets() {
     let n, m, left, right;
     if (view === 'removed' || view === 'plan') {
       const items = view === 'removed' ? rmPool(s) : plPool(s), rec = record(view, s);
-      n = items.length; m = items.filter(i => rec[i.id] === 1).length;
-      left = `${n} question${n === 1 ? '' : 's'}`; right = items.some(i => i.id in rec) ? `${m} right` : 'not tried';
+      n = items.length; m = items.filter(i => CTLearn.done(rec, i.id)).length;
+      left = `${n} question${n === 1 ? '' : 's'}`; right = items.some(i => i.id in rec) ? `${m} mastered` : 'not tried';
     } else {
       const lv = s === active ? levels : loadLevels(s.id);
       n = s.cards.length; m = s.cards.filter(c => (lv[c.id] || 0) === 3).length;
@@ -1307,11 +1324,9 @@ $('#learn-box').addEventListener('click', e => {
 $('#learn-box').addEventListener('submit', e => { e.preventDefault(); submitWritten(false); });
 
 /* ---------- decks for Removed? and Plan ---------- */
-// rounds of DECK_SIZE; questions not yet answered right come first
-function deal(items, rec) {
-  const fresh = shuffle(items.filter(i => rec[i.id] !== 1)), done = shuffle(items.filter(i => rec[i.id] === 1));
-  return (settings.ask === 'new' ? fresh : [...fresh, ...done]).slice(0, DECK_SIZE);  // Not mastered: only questions not yet answered right
-}
+// no rounds: one question after another, picked by shared/learn_pick.js (Not mastered: until each is right three times)
+const quizOf = (items, kind) => ({ pool: items, key: i => i.id, rec: record(kind, active), ask: settings.ask, all: CTLearn.isAll(active) });
+const quizPill = v => { const l = Math.min(3, +v || 0); return `<span class="pill" data-l="${l}">${LEVEL_NAMES[l]}</span>`; };
 const streakPill = st => st.streak >= 2 ? `<span class="pill" data-l="3">${st.streak} in a row</span>` : '';
 const hardPill = q => q.hard ? '<span class="pill hard" title="A selectivity question: Hard only">Selectivity</span>' : '';
 function deckSummaryHTML(st, title, rows, again) {
@@ -1331,14 +1346,13 @@ function retryDeck(st, build, deal) {
   st.deck = shuffle(missed); st.i = 0; st.results = []; st.retry = true;
   build();
 }
-const emptyHTML = what => `<div class="panel"><p class="help">${settings.ask === 'new' ? `You have answered every ${what} question in this set right. Set Ask to All cards to go through them again.` : `This set has no ${what} questions on ${hard() ? 'Hard' : 'Easy'}.${hard() ? '' : ' Try Hard.'}`}</p></div>`;
+const emptyHTML = what => `<div class="panel"><p class="help">${settings.ask === 'new' ? `You have answered every ${what} question in this set right three times. Set Ask to All cards to go through them again.` : `This set has no ${what} questions on ${hard() ? 'Hard' : 'Easy'}.${hard() ? '' : ' Try Hard.'}`}</p></div>`;
 
 /* ---------- Removed? ---------- */
 const rmPool = s => s.removed.filter(q => hard() || !q.hard);
 const rm = { deck: [], i: 0, cur: null, phase: 'question', results: [], streak: 0 };
 function rmDeal() {
-  rm.deck = notFirst(deal(rmPool(active), record('removed', active)), rm.cur && rm.cur.q); rm.i = 0; rm.results = []; rm.retry = false;
-  if (rm.deck.length) rmBuild(); else { rm.phase = 'empty'; renderRemoved(); }
+  if (CTLearn.deal(rm, quizOf(rmPool(active), 'removed'), rm.cur && rm.cur.q)) rmBuild(); else { rm.phase = 'empty'; renderRemoved(); }
 }
 function rmBuild() { rm.cur = { q: rm.deck[rm.i], picked: new Set(), checked: false }; rm.phase = 'question'; renderRemoved(); }
 function rmToggle(k, refocus) {
@@ -1356,15 +1370,12 @@ function rmCheck(showMe) {
   c.showMe = showMe; c.checked = true;
   rm.results.push({ q: c.q, ok: c.ok });
   rm.streak = c.ok ? rm.streak + 1 : 0;
-  const rec = record('removed', active); rec[c.q.id] = c.ok ? 1 : 0; store.set('pg.removed', rec);
+  const rec = record('removed', active); CTLearn.mark(rec, c.q.id, c.ok); store.set('pg.removed', rec);
   renderRemoved(); renderSets();
   const b = $('#rm-next'); if (b) b.focus({ preventScroll: true });
 }
 function rmNext() {
-  rm.i++;
-  if (rm.i < rm.deck.length) return rmBuild();
-  rm.phase = 'summary'; renderRemoved();
-  const b = $('#rm-retry') || $('#rm-again'); if (b) b.focus({ preventScroll: true });
+  if (CTLearn.step(rm, quizOf(rmPool(active), 'removed'))) rmBuild(); else { rm.phase = 'empty'; renderRemoved(); }
 }
 function renderRemoved() {
   closePg();
@@ -1382,7 +1393,7 @@ function renderRemoved() {
   const ask = done ? 'Orange: the groups these conditions remove.'
     : 'Which protecting groups do these conditions remove? Pick every one, on the structure or below, then check. Tap an abbreviation to see the whole group.';
   el.innerHTML = `<div class="panel">
-      <div class="qhead"><div class="qtop"><p class="eyebrow">Removed?${rm.retry ? ' · missed' : ''} · ${rm.i + 1} of ${rm.deck.length}</p><div class="tags">${hardPill(q)}${streakPill(rm)}</div></div>
+      <div class="qhead"><div class="qtop"><p class="eyebrow">Removed?</p><div class="tags">${hardPill(q)}${streakPill(rm)}${quizPill(record('removed', active)[q.id])}</div></div>
         <figure class="figure"><div class="scheme${done ? '' : ' pick'}" role="img" aria-label="Protected ${esc(q.scaf)} and the conditions">
           ${molSVG(q.mol, 1.5, 250, 460, 'id="rm-mol"')}
           <span class="arrow"><span class="cond">${esc(condLabel(q.cond))}</span><span class="line"></span></span>${right}</div></figure>
@@ -1414,7 +1425,7 @@ function rmFeedbackHTML(c) {
       <p class="verdict ${c.ok ? 'good' : 'bad'}">${verdict}</p>
       <ul class="verdicts">${rows}</ul>
       <p class="note">${esc(condLabel(q.cond))}: ${esc(CND[q.cond].desc)}</p>
-      <div class="row end"><button type="button" class="btn" id="rm-next">${rm.i + 1 < rm.deck.length ? 'Next molecule' : 'See results'}</button></div>
+      <div class="row end"><button type="button" class="btn" id="rm-next">Next molecule</button></div>
     </div>`;
 }
 $('#removed-box').addEventListener('click', e => {
@@ -1456,13 +1467,12 @@ function evaluate(q, assign) {
   return { ok, rows };
 }
 function plDeal() {
-  pl.deck = notFirst(deal(plPool(active), record('plan', active)), pl.cur && pl.cur.q); pl.i = 0; pl.results = []; pl.retry = false;
-  if (pl.deck.length) plBuild(); else { pl.phase = 'empty'; renderPlan(); }
+  if (CTLearn.deal(pl, quizOf(plPool(active), 'plan'), pl.cur && pl.cur.q)) plBuild(); else { pl.phase = 'empty'; renderPlan(); }
 }
 function plMode(q) {
   if (settings.ptype === 'mc') return 'mc';
   if (settings.ptype === 'own') return 'assign';
-  return record('plan', active)[q.id] === 1 ? 'assign' : 'mc';
+  return (+record('plan', active)[q.id] || 0) >= 2 ? 'assign' : 'mc';
 }
 function plBuild() {
   const q = pl.deck[pl.i];
@@ -1475,7 +1485,7 @@ function plFinish(assign, chosen, showMe) {
   c.ok = !showMe && c.result.ok; c.checked = true;
   pl.results.push({ q: c.q, ok: c.ok });
   pl.streak = c.ok ? pl.streak + 1 : 0;
-  const rec = record('plan', active); rec[c.q.id] = c.ok ? 1 : 0; store.set('pg.plan', rec);
+  const rec = record('plan', active); CTLearn.mark(rec, c.q.id, c.ok); store.set('pg.plan', rec);
   renderPlan(); renderSets();
   const b = $('#pl-next'); if (b) b.focus({ preventScroll: true });
 }
@@ -1485,10 +1495,7 @@ function plChoose(i) {
   plFinish(c.q.opts[c.opts[i]], i, false);
 }
 function plNext() {
-  pl.i++;
-  if (pl.i < pl.deck.length) return plBuild();
-  pl.phase = 'summary'; renderPlan();
-  const b = $('#pl-retry') || $('#pl-again'); if (b) b.focus({ preventScroll: true });
+  if (CTLearn.step(pl, quizOf(plPool(active), 'plan'))) plBuild(); else { pl.phase = 'empty'; renderPlan(); }
 }
 const planList = (q, assign) => `<span class="plan-opt">${assign.map((g, k) => `<span><b>${LETTERS[k]}</b>${esc(G[g].name)}</span>`).join('')}</span>`;
 function renderPlan() {
@@ -1525,7 +1532,7 @@ function renderPlan() {
     ? 'Which plan works? Each step must free exactly the site it names and leave the other groups on.'
     : 'Pick a protecting group for each lettered site so that each step frees exactly the site it names. Any plan that works counts.';
   el.innerHTML = `<div class="panel">
-      <div class="qhead"><div class="qtop"><p class="eyebrow">Plan${pl.retry ? ' · missed' : ''} · ${pl.i + 1} of ${pl.deck.length}</p><div class="tags">${hardPill(q)}${streakPill(pl)}</div></div>
+      <div class="qhead"><div class="qtop"><p class="eyebrow">Plan</p><div class="tags">${hardPill(q)}${streakPill(pl)}${quizPill(record('plan', active)[q.id])}</div></div>
         <h2 class="term">${esc(q.scaf)}</h2>
         <figure class="figure center">${molSVG(q.mol, 1.5, 240, 460)}</figure>
         <ol class="steps">${steps}</ol>
@@ -1555,7 +1562,7 @@ function plFeedbackHTML(c) {
     if (!c.ok) html += traceHTML(q, evaluate(q, sol), sol);
   }
   return `<div class="feedback" aria-live="polite">${html}
-      <div class="row end"><button type="button" class="btn" id="pl-next">${pl.i + 1 < pl.deck.length ? 'Next molecule' : 'See results'}</button></div></div>`;
+      <div class="row end"><button type="button" class="btn" id="pl-next">Next molecule</button></div></div>`;
 }
 $('#plan-box').addEventListener('click', e => {
   const b = e.target.closest('button');
